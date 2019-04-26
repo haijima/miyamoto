@@ -63,22 +63,50 @@ loadGSTimesheets = function () {
   };
 
   GSTimesheets.prototype.get = function(username, date) {
-    var sheet = this._getSheet(username);
     var rowNo = this._getRowNo(username, date);
+    return this.getByRowNo(username, rowNo);
+  };
+
+  GSTimesheets.prototype.getByRowNo = function(username, rowNo) {
+    var sheet = this._getSheet(username);
     var row = sheet.getRange("A"+rowNo+":"+String.fromCharCode(65 + this.scheme.columns.length - 1)+rowNo).getValues()[0].map(function(v) {
       return v === '' ? undefined : v;
     });
 
-    return({ user: username, date: row[0], signIn: row[1], signOut: row[2], note: row[3] });
+    return({ user: username, date: row[0], signIn: row[1], signOut: row[2], note: row[3], rowNo: rowNo });
+  };
+
+  GSTimesheets.prototype.getLastRow = function(username) {
+    var sheet = this._getSheet(username);
+    var rowNo = sheet.getLastRow();
+    for (; rowNo >= 0; rowNo--) {
+      if (sheet.getRange("A"+rowNo).getValue() !== '' ||
+          sheet.getRange("B"+rowNo).getValue() !== '' ||
+          sheet.getRange("C"+rowNo).getValue() !== '' ||
+          sheet.getRange("D"+rowNo).getValue() !== '') {
+            break;
+          }
+    }
+    return this.getByRowNo(username, rowNo);
+  };
+
+  GSTimesheets.prototype.getLastRows = function() {
+    var self = this;
+    return _.map(this.getUsers(), function(username) {
+      return self.getLastRow(username);
+    });
   };
 
   GSTimesheets.prototype.set = function(username, date, params) {
-    var row = this.get(username, date);
+    var rowNo = this._getRowNo(username, date);
+    return this.setByRowNo(username, date, params, rowNo);
+  };
+
+  GSTimesheets.prototype.setByRowNo = function(username, date, params, rowNo) {
+    var row = this.getByRowNo(username, rowNo);
     _.extend(row, _.pick(params, 'signIn', 'signOut', 'note'));
 
     var sheet = this._getSheet(username);
-    var rowNo = this._getRowNo(username, date);
-
     var data = [DateUtils.toDate(date), row.signIn, row.signOut, row.note].map(function(v) {
       return v == null ? '' : v;
     });

@@ -88,21 +88,21 @@ function setUp() {
 
     // メッセージ用のシートを作成
     new GSTemplate(spreadsheet);
-
-    // 毎日11時頃に出勤してるかチェックする
-    ScriptApp.newTrigger('confirmSignIn')
-      .timeBased()
-      .everyDays(1)
-      .atHour(11)
-      .create();
-
-    // 毎日22時頃に退勤してるかチェックする
-    ScriptApp.newTrigger('confirmSignOut')
-      .timeBased()
-      .everyDays(1)
-      .atHour(22)
-      .create();
   }
+
+  var triggers = ScriptApp.getProjectTriggers();
+  for(var i=0; i < triggers.length; i++) {
+    ScriptApp.deleteTrigger(triggers[i]);
+  }
+  // 4時間おきに退勤してるかチェックする
+  [0,4,8,12,16,20].forEach(function(t) {
+    ScriptApp.newTrigger('confirmSignOut')
+    .timeBased()
+    .everyDays(1)
+    .atHour(t)
+    .create();
+  });
+
 };
 
 /* バージョンアップ処理を行う */

@@ -358,10 +358,11 @@ loadGSTemplate = function() {
       }
       else {
         var now = DateUtils.now();
-        this.sheet.getRange("A1:L2").setValues([
+        this.sheet.getRange("A1:O2").setValues([
           [
             "出勤", "出勤更新", "退勤", "退勤更新", "休暇", "休暇取消",
-            "出勤中", "出勤なし", "休暇中", "休暇なし", "出勤確認", "退勤確認"
+            "出勤中", "出勤なし", "休暇中", "休暇なし", "出勤確認", "退勤確認",
+            "未退勤", "未出勤", "異常"
           ],
           [
             "<@#1> おはようございます (#2)", "<@#1> 出勤時間を#2へ変更しました",
@@ -369,7 +370,9 @@ loadGSTemplate = function() {
             "<@#1> #2を休暇として登録しました", "<@#1> #2の休暇を取り消しました",
             "#1が出勤しています", "全員退勤しています",
             "#1は#2が休暇です", "#1に休暇の人はいません",
-            "今日は休暇ですか？ #1", "退勤しましたか？ #1"
+            "今日は休暇ですか？ #1", "まだ働いていますか？ #1",
+            "前回の退勤がまだなので出勤できません <@#1>", "まだ出勤していないので退勤できません <@#1>",
+            "タイムシートが異常な状態です。Google Spreadsheetを確認してくだい <@#1>"
           ]
         ]);
       }
@@ -481,22 +484,50 @@ loadGSTimesheets = function () {
   };
 
   GSTimesheets.prototype.get = function(username, date) {
-    var sheet = this._getSheet(username);
     var rowNo = this._getRowNo(username, date);
+    return this.getByRowNo(username, rowNo);
+  };
+
+  GSTimesheets.prototype.getByRowNo = function(username, rowNo) {
+    var sheet = this._getSheet(username);
     var row = sheet.getRange("A"+rowNo+":"+String.fromCharCode(65 + this.scheme.columns.length - 1)+rowNo).getValues()[0].map(function(v) {
       return v === '' ? undefined : v;
     });
 
-    return({ user: username, date: row[0], signIn: row[1], signOut: row[2], note: row[3] });
+    return({ user: username, date: row[0], signIn: row[1], signOut: row[2], note: row[3], rowNo: rowNo });
+  };
+
+  GSTimesheets.prototype.getLastRow = function(username) {
+    var sheet = this._getSheet(username);
+    var rowNo = sheet.getLastRow();
+    for (; rowNo >= 0; rowNo--) {
+      if (sheet.getRange("A"+rowNo).getValue() !== '' ||
+          sheet.getRange("B"+rowNo).getValue() !== '' ||
+          sheet.getRange("C"+rowNo).getValue() !== '' ||
+          sheet.getRange("D"+rowNo).getValue() !== '') {
+            break;
+          }
+    }
+    return this.getByRowNo(username, rowNo);
+  };
+
+  GSTimesheets.prototype.getLastRows = function() {
+    var self = this;
+    return _.map(this.getUsers(), function(username) {
+      return self.getLastRow(username);
+    });
   };
 
   GSTimesheets.prototype.set = function(username, date, params) {
-    var row = this.get(username, date);
+    var rowNo = this._getRowNo(username, date);
+    return this.setByRowNo(username, date, params, rowNo);
+  };
+
+  GSTimesheets.prototype.setByRowNo = function(username, date, params, rowNo) {
+    var row = this.getByRowNo(username, rowNo);
     _.extend(row, _.pick(params, 'signIn', 'signOut', 'note'));
 
     var sheet = this._getSheet(username);
-    var rowNo = this._getRowNo(username, date);
-
     var data = [DateUtils.toDate(date), row.signIn, row.signOut, row.note].map(function(v) {
       return v == null ? '' : v;
     });
@@ -621,21 +652,21 @@ function setUp() {
 
     // メッセージ用のシートを作成
     new GSTemplate(spreadsheet);
-
-    // 毎日11時頃に出勤してるかチェックする
-    ScriptApp.newTrigger('confirmSignIn')
-      .timeBased()
-      .everyDays(1)
-      .atHour(11)
-      .create();
-
-    // 毎日22時頃に退勤してるかチェックする
-    ScriptApp.newTrigger('confirmSignOut')
-      .timeBased()
-      .everyDays(1)
-      .atHour(22)
-      .create();
   }
+
+  var triggers = ScriptApp.getProjectTriggers();
+  for(var i=0; i < triggers.length; i++) {
+    ScriptApp.deleteTrigger(triggers[i]);
+  }
+  // 4時間おきに退勤してるかチェックする
+  [0,4,8,12,16,20].forEach(function(t) {
+    ScriptApp.newTrigger('confirmSignOut')
+    .timeBased()
+    .everyDays(1)
+    .atHour(t)
+    .create();
+  });
+
 };
 
 /* バージョンアップ処理を行う */
@@ -764,17 +795,20 @@ loadTimesheets = function (exports) {
   // 出勤
   Timesheets.prototype.actionSignIn = function(username, message) {
     if(this.datetime) {
-      var data = this.storage.get(username, this.datetime);
-      if(!data.signIn || data.signIn === '-') {
-        this.storage.set(username, this.datetime, {signIn: this.datetime});
+      var data = this.storage.getLastRow(username);
+      switch (getState(data)) {
+        case 0:
+        // 出勤する
+        this.storage.setByRowNo(username, this.datetime, {signIn: this.datetime}, data.rowNo + 1);
         this.responder.template("出勤", username, this.datetimeStr);
-      }
-      else {
-        // 更新の場合は時間を明示する必要がある
-        if(!!this.time) {
-          this.storage.set(username, this.datetime, {signIn: this.datetime});
-          this.responder.template("出勤更新", username, this.datetimeStr);
-        }
+          break;
+        case 1:
+          // 退勤していないので出勤できない
+          this.responder.template("未退勤", username);
+          break;
+        default:
+          // おかしな状態
+          this.responder.template("異常", username);
       }
     }
   };
@@ -782,17 +816,20 @@ loadTimesheets = function (exports) {
   // 退勤
   Timesheets.prototype.actionSignOut = function(username, message) {
     if(this.datetime) {
-      var data = this.storage.get(username, this.datetime);
-      if(!data.signOut || data.signOut === '-') {
-        this.storage.set(username, this.datetime, {signOut: this.datetime});
-        this.responder.template("退勤", username, this.datetimeStr);
-      }
-      else {
-        // 更新の場合は時間を明示する必要がある
-        if(!!this.time) {
-          this.storage.set(username, this.datetime, {signOut: this.datetime});
-          this.responder.template("退勤更新", username, this.datetimeStr);
-        }
+      var data = this.storage.getLastRow(username);
+      switch (getState(data)) {
+        case 0:
+          // 出勤していないので退勤できない
+          this.responder.template("未出勤", username);
+          break;
+        case 1:
+          // 退勤する
+          this.storage.setByRowNo(username, this.datetime, {signOut: this.datetime}, data.rowNo);
+          this.responder.template("退勤", username, this.datetimeStr);
+          break;
+        default:
+          // おかしな状態
+          this.responder.template("異常", username);
       }
     }
   };
@@ -893,14 +930,34 @@ loadTimesheets = function (exports) {
   // 退勤していない人にメッセージを送る
   Timesheets.prototype.confirmSignOut = function(username, message) {
     var dateObj = DateUtils.toDate(DateUtils.now());
-    var users = _.compact(_.map(this.storage.getByDate(dateObj), function(row) {
-      return _.isDate(row.signIn) && !_.isDate(row.signOut) ? row.user : undefined;
+    var users = _.compact(_.map(this.storage.getLastRows(), function(row) {
+      if (_.isDate(row.signIn) && !_.isDate(row.signOut)) {
+        var n = dateObj.getTime() - dateObj.getTimezoneOffset() * 60 * 1000;
+        var signIn = row.signIn;
+        var s = signIn.getTime() - signIn.getTimezoneOffset() * 60 * 1000;
+        if (n - s > 8 * 60 * 60 *1000) {
+          return row.user;
+        }
+      }
+      return undefined;
     }));
 
     if(!_.isEmpty(users)) {
       this.responder.template("退勤確認", users.sort());
     }
   };
+
+  function getState(data) {
+    var si = !!data.signIn
+    var so = !!data.signOut
+    if (si === so) {
+      return 0; // off
+    }
+    if (si) {
+      return 1; // 仕事中
+    }
+    return 2; // illegal state
+  }
 
   return Timesheets;
 };
